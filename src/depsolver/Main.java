@@ -2,524 +2,469 @@ package depsolver;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.TypeReference;
-import java.util.*;
 import java.io.*;
+import java.util.*;
+
 
 
 public class Main {
-    private static HashSet<List<String>> seenSet = new HashSet<>();
-    private static HashMap<String, Integer> solutions = new HashMap<>();
-    private static HashMap<String, Integer> biggestConflicts = new HashMap<>();
-    private static List<String> commands = new ArrayList<>();
-
+    private static boolean satisfies = false;
+    private static List<String> commandsArray = new ArrayList<>();
+    private static HashSet<List<String>> visitedSetHash = new HashSet<>();
+    private static HashMap<String, Integer> solutionHash = new HashMap<>();
+    private static HashMap<String, Integer> maxConflictHash = new HashMap<>();
 
     /**
-     * The main function finds calculates all the ways to solve the dependency issue then prints the cheapest method to the console in JSON format
-     *
+     * Find the optimal solution for a dependency issue
      * @param args
      * @throws IOException
      */
     public static void main(String[] args) throws IOException {
-        TypeReference<List<Package>> repoType = new TypeReference<List<Package>>() {};
+        TypeReference<List<Package>> repoType = new TypeReference<List<Package>>() {    };
         List<Package> repo = JSON.parseObject(readFile(args[0]), repoType);
-        TypeReference<List<String>> strListType = new TypeReference<List<String>>() {};
+        TypeReference<List<String>> strListType = new TypeReference<List<String>>() {   };
         List<String> initial = JSON.parseObject(readFile(args[1]), strListType);
         List<String> constraints = JSON.parseObject(readFile(args[2]), strListType);
-        verifyAndSearch(initial, repo, constraints);
-        printCheapestSolution();
+        while (!(packetValid(initial, repo))) {
+            initial = rmBadPackets(initial, repo);
+        }
+        search(initial, repo, initial, constraints);
+        getANS();
     }
 
     /**
-     * Removes any and all bad packages then runs the search function on the new list
-     *
-     * @param initial
+     * Helper function to reduce duplicate code
+     * @return
+     */
+    private static String cmdStr()    {
+        String cTemp = "";
+        for (String T : commandsArray) {
+            cTemp = cTemp + T;
+            cTemp = cTemp + ",";
+        }
+        return cTemp;
+    }
+
+    /**
+     * Search for a valid  solution
+     * @param set
      * @param repo
+     * @param initial
      * @param constraints
      */
-    private static void verifyAndSearch(List<String> initial, List<Package> repo, List<String> constraints)    {
-        if(!valid(initial, repo))   {
-            List<String> fixed = rmBadPackages(initial, repo);
-            while(!valid(fixed,repo)) {
-                fixed = rmBadPackages(fixed, repo);
+    private static void search(List<String> set, List<Package> repo, List<String> initial, List<String> constraints) {
+        int price;
+        if (!packetValid(set, repo)) return;
+        if (visitedSetHash.contains(set))  return;
+        if (bottomoStatment(set, constraints)) {
+            satisfies = true;
+            price = price(repo);
+            String cTemp = cmdStr();
+            solutionHash.put(cTemp, price);
+            return;
+        }
+        visitedSetHash.add(set);
+        fixPack(set, repo, initial, constraints);
+    }
+
+    /**
+     * Repair a faulty packet
+     * @param set
+     * @param repo
+     * @param initial
+     * @param constraints
+     */
+    private static void fixPack(List<String> set, List<Package> repo, List<String> initial, List<String> constraints)   {
+        for (Package pack : repo) {
+            if (initial.contains(pack.getName() + "=" + pack.getVersion())) {
+                set.remove(pack.getName() + "=" + pack.getVersion());
+                commandsArray.add("-" + pack.getName() + "=" + pack.getVersion());
+                search(set, repo, initial, constraints);
+                set.add(pack.getName() + "=" + pack.getVersion());
+                commandsArray.remove("-" + pack.getName() + "=" + pack.getVersion());
+            } else if (!(commandsArray.contains("-" + pack.getName() + "=" + pack.getVersion())) && !(set.contains(pack.getName() + "=" + pack.getVersion()))) {
+                set.add(pack.getName() + "=" + pack.getVersion());
+                commandsArray.add("+" + pack.getName() + "=" + pack.getVersion());
+                search(set, repo, initial, constraints);
+                set.remove(pack.getName() + "=" + pack.getVersion());
+                commandsArray.remove("+" + pack.getName() + "=" + pack.getVersion());
             }
-            search(fixed, repo, fixed, constraints);
-        } else {
-            search(initial, repo, initial, constraints);
         }
     }
 
     /**
-     * Builds a string based on a given set of commands
-     * @return the new string
+     * Checks is a packet is faulty
+     * @param set
+     * @param repo
+     * @return a boolean to determine is a packet is valid or not
      */
-    private static String commands()    {
-        String rt = "";
-        for(String s : commands) {
-            rt+= s+",";
-        }
-        return rt;
-    }
-
-    private static void search(List<String> set, List<Package> repo, List<String> fixed, List<String> constraints) {
-        if(!valid(set, repo)) { return; }
-        if(seenSet.contains(set)) { return; }
-        if(finalState(set, constraints)) {
-            int opCost = solutionCost(repo);
-            Integer costOfSolution = new Integer(opCost);
-            String commands = commands();
-            solutions.put(commands, costOfSolution);
-            return;
-        }
-        seenSet.add(set);
-        updatePackages(set, repo, fixed, constraints);
-    }
-
-
-
-
-    private static boolean valid(List<String> set, List<Package> repo) {
-        boolean foundDep = false;
-        boolean foundConflict = false;
-
-        for(Package pack : repo) {
-            if(set.contains(pack.getName() + "=" + pack.getVersion())) {
-                for(List<String> depnds : pack.getDepends()) {
-                    for(String deps : depnds) {
-                        String[] depSplit = splitPackage(deps);
-                        String compareOperator = depSplit[2];
-                        if(!foundDep) {
-                            for(String str : set) {
-                                String[] strSplit = splitPackage(str);
-                                if(depSplit[0].equals(strSplit[0])) {
-                                    switch(compareOperator) {
-                                        case "="  : if(deps.equals(str))
-                                                        foundDep =  true;
-                                                    break;
-                                        case "<"  : if(!depSplit[1].equals(strSplit[1]) && versionCompare(depSplit[1], strSplit[1]) == true)
-                                                        foundDep =  true;
-                                                    break;
-                                        case "<=" : if(versionCompare(depSplit[1], strSplit[1]))
-                                                        foundDep =  true;
-                                                    break;
-                                        case ">"  : if(!depSplit[1].equals(strSplit[1]) && versionCompare(strSplit[1], depSplit[1]) == true)
-                                                        foundDep =  true;
-                                                    break;
-                                        case ">=" : if(versionCompare(strSplit[1], depSplit[1]))
-                                                        foundDep =  true;
-                                                    break;
-                                        default : foundDep = true;
-                                                    break;
+    private static boolean packetValid(List<String> set, List<Package> repo) {
+        for (Package pack : repo) {
+            if (set.contains(pack.getName() + "=" + pack.getVersion())) {
+                for (List<String> subsectionArray : pack.getDepends()) {
+                    boolean fnd;
+                    fnd = false;
+                    for (String p : subsectionArray) {
+                        String[] spli_t;
+                        spli_t = packageSpli_t(p);
+                        String compareOperator;
+                        compareOperator = spli_t[2];
+                        if (!fnd) {
+                            for (String T : set) {
+                                String[] spl_i_t;
+                                spl_i_t = packageSpli_t(T);
+                                if (spli_t[0].equals(spl_i_t[0])) {
+                                    switch (compareOperator) {
+                                        case "=" : if (p.equals(T)) fnd = true; break;
+                                        case "<" : if (!spli_t[1].equals(spl_i_t[1]) && versionCompare(spli_t[1], spl_i_t[1])) fnd = true; break;
+                                        case "<=": if (versionCompare(spli_t[1], spl_i_t[1])) fnd = true; break;
+                                        case ">" : if (!spli_t[1].equals(spl_i_t[1]) && (versionCompare(spl_i_t[1], spli_t[1]))) fnd = true; break;
+                                        case ">=": if (versionCompare(spl_i_t[1], spli_t[1])) fnd = true; break;
+                                        default: fnd = true; break;
                                     }
                                 }
                             }
                         }
                     }
-                    if(!foundDep) { return false; }
+                    if (!fnd)
+                        return false;
                 }
 
-                for(String str : pack.getConflicts()) {
-                    String[] cSplit = splitPackage(str);
-                    String compareOperator = cSplit[2];
-                    if(!foundConflict) {
-                        for(String nxt : set) {
-                            String[] tSplit = splitPackage(nxt);
-                            if(cSplit[0].equals(tSplit[0])) {
-                                switch(compareOperator) {
-                                    case "=" : if(str.equals(nxt)) {
-                                                    foundConflict = true;
-                                                    Integer value = biggestConflicts.get(nxt);
-                                                    if(value != null)
-                                                        biggestConflicts.put(nxt, value++);
-                                                    else
-                                                        biggestConflicts.put(nxt, 1);
-                                                }
-                                                break;
-                                    case "<" : if(!cSplit[1].equals(tSplit[1]) && versionCompare(cSplit[1], tSplit[1]) == true) {
-                                                    foundConflict =  true;
-                                                    Integer value = biggestConflicts.get(nxt);
-                                                    if(value != null)
-                                                        biggestConflicts.put(nxt, value++);
-                                                    else
-                                                        biggestConflicts.put(nxt, 1);
-                                                }
-                                                break;
-                                    case "<=" : if(versionCompare(cSplit[1], tSplit[1])) {
-                                                    foundConflict =  true;
-                                                    Integer value = biggestConflicts.get(nxt);
-                                                    if(value != null)
-                                                        biggestConflicts.put(nxt, value++);
-                                                    else
-                                                        biggestConflicts.put(nxt, 1);
-                                                }
-                                                break;
-                                    case ">" : if(!cSplit[1].equals(tSplit[1]) && versionCompare(tSplit[1], cSplit[1]) == true) {
-                                                    foundConflict =  true;
-                                                    Integer value = biggestConflicts.get(nxt);
-                                                    if(value != null)
-                                                        biggestConflicts.put(nxt, value++);
-                                                    else
-                                                        biggestConflicts.put(nxt, 1);
-                                                }
-                                                break;
-                                    case ">=" : if(versionCompare(tSplit[1], cSplit[1])) {
-                                                    foundConflict =  true;
-                                                    Integer value = biggestConflicts.get(nxt);
-                                                    if(value != null)
-                                                        biggestConflicts.put(nxt, value++);
-                                                    else
-                                                        biggestConflicts.put(nxt, 1);
-                                                }
-                                                break;
-                                    default : foundConflict = true;
-                                              Integer value = biggestConflicts.get(nxt);
-                                              if(value != null)
-                                                  biggestConflicts.put(nxt, value++);
-                                              else
-                                                  biggestConflicts.put(nxt, 1);
-                                              break;
+                boolean foundConflict;
+                foundConflict = false;
+
+                for (String T : pack.getConflicts()) {
+                    String[] spli_tCons;
+                    spli_tCons = packageSpli_t(T);
+                    String compareOperator;
+                    compareOperator = spli_tCons[2];
+                    if (!foundConflict) {
+                        for (String S : set) {
+                            String[] split_S;
+                            split_S = packageSpli_t(S);
+                            if (spli_tCons[0].equals(split_S[0])) {
+                                switch (compareOperator) {
+                                    case "=": if (T.equals(S)) {
+                                            foundConflict = true;
+                                            Integer value;
+                                            value = maxConflictHash.get(S);
+                                            if (value == null) maxConflictHash.put(S, 1);
+                                            else maxConflictHash.put(S, value++);
+                                        }
+                                        break;
+
+                                    case "<": if (!(spli_tCons[1].equals(split_S[1])) && versionCompare(spli_tCons[1], split_S[1])) {
+                                                foundConflict = true;
+                                                Integer value;
+                                                value = maxConflictHash.get(S);
+                                                if (value == null) maxConflictHash.put(S, 1);
+                                                else maxConflictHash.put(S, value++);
+                                        }
+                                        break;
+
+                                    case "<=": if (versionCompare(spli_tCons[1], split_S[1])) {
+                                            foundConflict = true;
+                                            Integer value;
+                                            value = maxConflictHash.get(S);
+
+                                            if (value == null) maxConflictHash.put(S, 1);
+                                            else maxConflictHash.put(S, value++);
+                                        }
+                                        break;
+
+                                    case ">": if (!(spli_tCons[1].equals(split_S[1]) && versionCompare(split_S[1], spli_tCons[1]))) {
+                                                foundConflict = true;
+                                                Integer value;
+                                                value = maxConflictHash.get(S);
+                                                if (value == null) maxConflictHash.put(S, 1);
+                                                else maxConflictHash.put(S, value++);
+                                        }
+                                        break;
+
+                                    case ">=": if (versionCompare(split_S[1], spli_tCons[1])) {
+                                            foundConflict = true;
+                                            Integer value;
+                                            value = maxConflictHash.get(S);
+                                            if (value == null) maxConflictHash.put(S, 1);
+                                            else maxConflictHash.put(S, value++);
+                                        }
+                                        break;
+
+                                    default:
+                                        foundConflict = true;
+                                        Integer value;
+                                        value = maxConflictHash.get(S);
+                                        if (value == null) maxConflictHash.put(S, 1);
+                                        else maxConflictHash.put(S, value++);
+                                        break;
+
                                 }
                             }
                         }
                     }
                 }
-                if(foundConflict) { return false; }
+                if (foundConflict) {
+                    return false;
+                }
             }
         }
         return true;
     }
 
-    private static boolean finalState(List<String> set, List<String> constraints) {
-        for(String str : constraints) {
-            String operator = Character.toString(str.charAt(0));
-            str = str.substring(1);
-            String[] consNameVers = splitPackage(str);
-            String consName = consNameVers[0];
-            String consVersion = consNameVers[1];
-            String compareOperator = consNameVers[2];
-
-            boolean constraintMet = false;
-            if(operator.equals("+")) {
-                for(String pack : set) {
-                    String[] pSplit = splitPackage(pack);
-                    if(consName.equals(pSplit[0])) {
-                        switch(compareOperator) {
-                            case "=" : if(consVersion.equals(pSplit[1]))
-                                            constraintMet = true;
-                                        break;
-                            case "<"  : break;
-                            case "<=" : break;
-                            case ">"  : break;
-                            case ">=" : break;
-                            default   : constraintMet = true;
-                                        break;
+    /**
+     * Check if we are at the bottom of a dependancy tree
+     * @param set
+     * @param constraints
+     * @return boolean of if we have reached the bottom of the dependency tree
+     */
+    private static boolean bottomoStatment(List<String> set, List<String> constraints) {
+        for (String T : constraints) {
+            String operator;
+            operator = Character.toString(T.charAt(0));
+            T = T.substring(1);
+            String[] versionConsName = packageSpli_t(T);
+            String nameCons = versionConsName[0];
+            String versionCons = versionConsName[1];
+            String compareOperator;
+            compareOperator = versionConsName[2];
+            boolean metConstraints;
+            metConstraints = false;
+            if (operator.equals("+")) {
+                for (String pack : set) {
+                    String[] split_P;
+                    split_P = packageSpli_t(pack);
+                    if (nameCons.equals(split_P[0])) {
+                        switch (compareOperator) {
+                            case "=": if (versionCons.equals(split_P[1])) metConstraints = true; break;
+                            case "<": break;
+                            case "<=": break;
+                            case ">": break;
+                            case ">=": break;
+                            default: metConstraints = true; break;
                         }
                     }
                 }
             }
-            if(!constraintMet) {
-                return false;
-            }
-            if(operator.equals("-")) {
+            if (!metConstraints) return false;
+            if (operator.equals("-")) {
                 int i = 0;
-                for(String p : set) {
-                    String[] pSplit = splitPackage(p);
-                    switch(compareOperator) {
-                        case "=" : if(consName.equals(pSplit[0]) && consVersion.equals(pSplit[1]))
-                                        i++;
-                                    break;
-                        case "<"  : break;
-                        case "<=" : break;
-                        case ">"  : break;
-                        case ">=" : break;
-                        default   : break;
+                for (String pack : set) {
+                    String[] split_P;
+                    split_P = packageSpli_t(pack);
+                    switch (compareOperator) {
+                        case "=":
+                            if (versionCons.equals(split_P[1]) && nameCons.equals(split_P[0])) i++; break;
+                        case "<" : break;
+                        case "<=": break;
+                        case ">" : break;
+                        case ">=": break;
+                        default  : break;
                     }
                 }
-                if(i > 0) { return false; }
+                if (i > 0) return false;
             }
         }
         return true;
     }
 
-    private static List<String> rmBadPackages(List<String> set, List<Package> repo) {
-        List<String> redudent = new ArrayList<>();
-
-        int counter = 0;
-        for(Package pack : repo) {
-            if(counter >= set.size()) { break; }
-            boolean packageRemoved = false;
-            if(set.contains(pack.getName() + "=" + pack.getVersion())) {
-                counter++;
-                for(List<String> clause : pack.getDepends()) {
-                    boolean foundDep = false;
-                    for(String q : clause) {
-                        String[] depSplit = splitPackage(q);
-                        String compareSymbol = depSplit[2];
-                        if(!q.contains("=")) {
-                            if(!foundDep) {
-                                for(String s : set) {
-                                    String[] sSplit = splitPackage(s);
-                                    if(depSplit[0].equals(sSplit[0])) {
-                                        switch(compareSymbol) {
-                                            case "="  : if(q.equals(s))
-                                                            foundDep =  true;
-                                                        break;
-                                            case "<"  : if(!depSplit[1].equals(sSplit[1]) && versionCompare(depSplit[1], sSplit[1]) == true)
-                                                            foundDep =  true;
-                                                        break;
-                                            case "<=" : if(versionCompare(depSplit[1], sSplit[1]))
-                                                            foundDep =  true;
-                                                        break;
-                                            case ">"  : if(!depSplit[1].equals(sSplit[1]) && versionCompare(sSplit[1], depSplit[1]) == true)
-                                                            foundDep =  true;
-                                                        break;
-                                            case ">=" : if(versionCompare(sSplit[1], depSplit[1]))
-                                                            foundDep =  true;
-                                                        break;
-                                            default   :     foundDep = true;
-                                                        break;
+    /**
+     * remove any pad packages
+     * @param set
+     * @param repo
+     * @return a complete set
+     */
+    private static List<String> rmBadPackets(List<String> set, List<Package> repo) {
+        List<String> rm = new ArrayList<>();
+        int increment = 0;
+        int limit;
+        limit = set.size();
+        for (Package pack : repo) {
+            if (limit <= increment) break;
+            boolean packageThrown = false;
+            if (set.contains(pack.getName() + "=" + pack.getVersion())) {
+                increment++;
+                for (List<String> subsectionArray : pack.getDepends()) {
+                    boolean fnd = false;
+                    for (String p : subsectionArray) {
+                        String[] spli_t;
+                        spli_t = packageSpli_t(p);
+                        String compareOperator;
+                        compareOperator = spli_t[2];
+                        if (!p.contains("=")) {
+                            if (!fnd) {
+                                for (String T : set) {
+                                    String[] spl_i_t;
+                                    spl_i_t = packageSpli_t(T);
+                                    if (spli_t[0].equals(spl_i_t[0])) {
+                                        switch (compareOperator) {
+                                            case "=": if (p.equals(T)) fnd = true; break;
+                                            case "<": if (!(spli_t[1].equals(spl_i_t[1])) && versionCompare(spli_t[1], spl_i_t[1])) fnd = true; break;
+                                            case "<=": if (versionCompare(spli_t[1], spl_i_t[1])) fnd = true; break;
+                                            case ">": if (!(spli_t[1].equals(spl_i_t[1])) && versionCompare(spl_i_t[1], spli_t[1])) fnd = true; break;
+                                            case ">=": if (versionCompare(spl_i_t[1], spli_t[1])) fnd = true; break;
+                                            default: fnd = true; break;
                                         }
                                     }
                                 }
                             }
                         } else {
-                            if(set.contains(q)) {
-                                foundDep = true;
-                            }
+                            if (set.contains(p)) fnd = true;
                         }
                     }
-                    if(!foundDep) {
-                        packageRemoved = true;
+                    if (!fnd) {
+                        packageThrown = true;
                         set.remove(pack.getName() + "=" + pack.getVersion());
-                        commands.add("-"+ pack.getName() + "=" + pack.getVersion());
+                        commandsArray.add("-" + pack.getName() + "=" + pack.getVersion());
                     }
                 }
-                if(!packageRemoved) {
+                if (!packageThrown) {
                     boolean foundConflict = false;
-                    for(String str : pack.getConflicts()) {
-                        String[] consSplit = splitPackage(str);
-                        String compareOperator = consSplit[2];
-                        if(!foundConflict) {
-                            for(String t : set) {
-                                String[] tSplit = splitPackage(t);
-                                if(consSplit[0].equals(tSplit[0])) {
-                                    switch(compareOperator) {
-                                        case "="  : if(str.equals(t))
-                                                        foundConflict = true;
-                                                    break;
-                                        case "<"  : if(!consSplit[1].equals(tSplit[1]) && versionCompare(consSplit[1], tSplit[1]) == true)
-                                                        foundConflict =  true;
-                                                    break;
-                                        case "<=" : if(versionCompare(consSplit[1], tSplit[1]))
-                                                        foundConflict =  true;
-                                                    break;
-                                        case ">"  : if(!consSplit[1].equals(tSplit[1]) && versionCompare(tSplit[1], consSplit[1]) == true)
-                                                        foundConflict =  true;
-                                                    break;
-                                        case ">=" : if(versionCompare(tSplit[1], consSplit[1]))
-                                                        foundConflict =  true;
-                                                    break;
-                                        default   : foundConflict = true;
-                                                    break;
+                    for (String T : pack.getConflicts()) {
+                        String[] spli_tCons = packageSpli_t(T);
+                        String compareOperator = spli_tCons[2];
+                        if (!foundConflict) {
+                            for (String S : set) {
+                                String[] split_S = packageSpli_t(S);
+                                if (spli_tCons[0].equals(split_S[0])) {
+                                    switch (compareOperator) {
+                                        case "=" : if (T.equals(S)) foundConflict = true; break;
+                                        case "<" : if (!(spli_tCons[1].equals(split_S[1]) && (versionCompare(spli_tCons[1], split_S[1])))) foundConflict = true; break;
+                                        case "<=": if (versionCompare(spli_tCons[1], split_S[1])) foundConflict = true; break;
+                                        case ">" : if (!(spli_tCons[1].equals(split_S[1])) && (versionCompare(split_S[1], spli_tCons[1]))) foundConflict = true; break;
+                                        case ">=": if (versionCompare(split_S[1], spli_tCons[1])) foundConflict = true; break;
+                                        default  : foundConflict = true; break;
                                     }
                                 }
                             }
                         }
                     }
-                    if(foundConflict) {
-                        redudent.add(pack.getName() + "=" + pack.getVersion());
+                    if (foundConflict) {
+                        rm.add(pack.getName() + "=" + pack.getVersion());
                         set.remove(pack.getName() + "=" + pack.getVersion());
-                        commands.add("-"+ pack.getName() + "=" + pack.getVersion());
+                        commandsArray.add("-" + pack.getName() + "=" + pack.getVersion());
                     }
                 }
             }
         }
-
         return set;
     }
 
     /**
-     * Removes out of date version of packages and replace them with the newest version
-     *
-     * @param set
-     * @param repo
-     * @param fixed
-     * @param constraints
-     */
-    private static void updatePackages(List<String> set, List<Package> repo, List<String> fixed, List<String> constraints)    {
-        for (Package pack : repo) {
-            if(!set.contains(pack.getName() + "=" + pack.getVersion()) &&
-                    !commands.contains("-" + pack.getName() + "=" + pack.getVersion())) {
-                set.add(pack.getName() + "=" + pack.getVersion());
-                commands.add("+" + pack.getName() + "=" + pack.getVersion());
-                search(set, repo, fixed, constraints);
-                set.remove(pack.getName() + "=" + pack.getVersion());
-                commands.remove("+" + pack.getName() + "=" + pack.getVersion());
-            } else if(fixed.contains(pack.getName() + "=" + pack.getVersion())) {
-                set.remove(pack.getName() + "=" + pack.getVersion());
-                commands.add("-" + pack.getName() + "=" + pack.getVersion());
-                search(set, repo, fixed, constraints);
-                set.add(pack.getName() + "=" + pack.getVersion());
-                commands.remove("-" + pack.getName() + "=" + pack.getVersion());
-            } else {
-
-            }
-        }
-    }
-
-    /**
-     *
+     * decided which version of a of two strings is better
      * @param v1
      * @param v2
-     * @return
+     * @return a boolean of ewhich of the two versions are better
      */
     private static boolean versionCompare(String v1, String v2) {
-        String v1Tmp = v1.replace("0", "");
-        String v2Tmp = v2.replace("0", "");
-        if(!v1Tmp.isEmpty()) { v1 = v1Tmp; }
-        if(!v2Tmp.isEmpty()) { v2 = v2Tmp; }
-        List<String> v1_Array = new ArrayList(Arrays.asList(v1.split("\\.")));
-        List<String> v2_Array = new ArrayList(Arrays.asList(v2.split("\\.")));
-        pad(v1_Array, v2_Array);
-        return bestVersion(v1_Array, v2_Array);
-    }
-
-    /**
-     * This function is used to make sure the two lists are of the same length
-     *
-     * @param v1_Array
-     * @param v2_Array
-     */
-    public static void pad(List<String> v1_Array, List<String> v2_Array)    {
-        while(v1_Array.size() != v2_Array.size()) {
-            if(v1_Array.size() > v2_Array.size()) {
-                v2_Array.add("0");
-            } else {
-                v1_Array.add("0");
-            }
+        String vT1 = v1.replace("0", "");
+        String vT2 = v2.replace("0", "");
+        if (!vT1.isEmpty()) v1 = vT1;
+        if (!vT2.isEmpty()) v2 = vT2;
+        List<String> v1Array = new ArrayList(Arrays.asList(v1.split("\\.")));
+        List<String> v2Array = new ArrayList(Arrays.asList(v2.split("\\.")));
+        while (v1Array.size() != v2Array.size()) {
+            if (v1Array.size() > v2Array.size()) v2Array.add("0");
+            else v1Array.add("0");
         }
-    }
-
-    /**
-     * Checks which version is better dependant on the contents of the array. Returns true is array 1 is better or
-     * the arrays are the same, if array 2 is better returns false.
-     *
-     * @param vers1Arr
-     * @param vers2Arr
-     * @return bool of better list
-     */
-    public static boolean bestVersion(List<String> vers1Arr, List<String> vers2Arr) {
-        if (vers1Arr.equals(vers2Arr))  { return true;  }
-        for(int i = 0; i < vers1Arr.size(); i++) {
-            if(Integer.parseInt(vers1Arr.get(i)) > Integer.parseInt(vers2Arr.get(i))) {
-                return true;
-            }
-            if(Integer.parseInt(vers2Arr.get(i)) > Integer.parseInt(vers1Arr.get(i))) {
-                return false;
-            }
+        for (int i = 0; i < v1Array.size(); i++) {
+            if (Integer.parseInt(v1Array.get(i)) > Integer.parseInt(v2Array.get(i))) return true;
+            if (Integer.parseInt(v2Array.get(i)) > Integer.parseInt(v1Array.get(i))) return false;
         }
         return true;
     }
 
     /**
-     *
-     * @param str
-     * @return result
+     * Xreate an array containing a possible solution.
+     * @param S
+     * @return an acceptable array solution
      */
-    private static String[] splitPackage(String str) {
-        boolean matched = false;
-        String[] nameVer;
-        String name ="";
-        String version = "";
-        String compareOperator = "";
-        ArrayList<String> operatorsS1 = new ArrayList();
-        operatorsS1.add("<"); operatorsS1.add("<"); operatorsS1.add("=");
+    private static String[] packageSpli_t(String S) {
+        String[] versionConsName = new String[2];
+        String nmCons = "";
+        String verCons = "";
+        String cmpairOP = "";
 
-        for (int i = 0; i < operatorsS1.size(); i++)    {
-            if (str.contains(operatorsS1.get(i))) {
-                nameVer = str.split(operatorsS1.get(i));
-                name = nameVer[0];
-                version = nameVer[1];
-                compareOperator = operatorsS1.get(i);
-                matched = true;
-            }
-        }
+        if (S.contains("<=")) {
+            S = S.replace("<", "");
+            versionConsName = S.split("=");
+            nmCons = versionConsName[0];
+            verCons = versionConsName[1];
+            cmpairOP = "<=";
+        } else if (S.contains("<")) {
+            versionConsName = S.split("<");
+            nmCons = versionConsName[0];
+            verCons = versionConsName[1];
+            cmpairOP = "<";
+        } else if (S.contains(">=")) {
+            S = S.replace(">", "");
+            versionConsName = S.split("=");
+            nmCons = versionConsName[0];
+            verCons = versionConsName[1];
+            cmpairOP = ">=";
+        } else if (S.contains(">")) {
+            versionConsName = S.split(">");
+            nmCons = versionConsName[0];
+            verCons = versionConsName[1];
+            cmpairOP = ">";
+        } else if (S.contains("=")) {
+            versionConsName = S.split("=");
+            nmCons = versionConsName[0];
+            verCons = versionConsName[1];
+            cmpairOP = "=";
+        } else nmCons = S;
 
-        ArrayList<String> operatorsS2 = new ArrayList();
-        operatorsS2.add("<="); operatorsS2.add(">=");
-        for (int i = 0; i < operatorsS2.size(); i++)    {
-            if (str.contains(operatorsS2.get(i))) {
-                if (i == 0)
-                    str = str.replace("<", "");
-                else
-                    str = str.replace(">", "");
-                nameVer = str.split("=");
-                name = nameVer[0];
-                version = nameVer[1];
-                compareOperator = operatorsS2.get(i);
-                matched = true;
-            }
-        }
-        if(!matched)
-            name = str;
-
-        String[] result = { name, version, compareOperator  };
-        return result;
+        String[] solutionArray = { nmCons, verCons, cmpairOP };
+        return solutionArray;
     }
 
     /**
-     * Calculates teh cost of a solution
+     * Returns the cost of a given solution
      *
      * @param repo
-     * @return the cost
+     * @return
      */
-    private static int solutionCost(List<Package> repo) {
-        int cost = 0;
+    private static int price(List<Package> repo) {
+        int solutionArray = 0;
 
-        for(String str : commands) {
-            if(str.contains("-")) {
-                cost += 1111111111;
-            } else {
-                for(Package pack : repo) {
-                    String nameVers = pack.getName() + "=" + pack.getVersion();
-                    if(str.substring(1).equals(nameVers)) {
-                        cost += pack.getSize();
-                    }
+        for (String T : commandsArray) {
+
+            if (T.contains("-")) solutionArray+= 1000000;
+            else {
+                for (Package pack : repo) {
+                    String versionName;
+                    versionName = pack.getName() + "=" + pack.getVersion();
+
+                    String p;
+                    p = T.substring(1);
+
+                    if (p.equals(versionName)) solutionArray = solutionArray + pack.getSize();
                 }
             }
         }
-        return cost;
+
+        return solutionArray;
     }
 
     /**
-     * This function determines what the cheapest solution by comparing the costs
-     *
-     * @return A list of the cheapest solution
+     * Outputs the cheapest solution to the console in a JSON format.
      */
-    private static List<String> getCheapestSolution()   {
-        List<String> result = new ArrayList<>();
+    private static void getANS() {
+        List<String> solutionArray = new ArrayList<>();
         int resultCost = 0;
-        for(Map.Entry<String, Integer> entry : solutions.entrySet()) {
-            if(entry.getValue() < resultCost || result.size() == 0) {
-                result = Arrays.asList(entry.getKey().split(","));
+        for (Map.Entry<String, Integer> entry : solutionHash.entrySet()) {
+            if (solutionArray.size() == 0 || entry.getValue() < resultCost) {
+                solutionArray = Arrays.asList(entry.getKey().split(","));
                 resultCost = entry.getValue();
             }
         }
-        return result;
+        System.out.println(JSON.toJSON(solutionArray));
     }
 
     /**
-     * Outputs the cheapest solution in JSON format
-     */
-    private static void printCheapestSolution() {
-        List<String> result = getCheapestSolution();
-        System.out.println(JSON.toJSON(result));
-    }
-
-    /**
-     * Reads the contents of a given file
+     * Reads a selected file
      *
      * @param filename
-     * @return a string with the contents of the selected file
+     * @return A string containing read in file
      * @throws IOException
      */
     static String readFile(String filename) throws IOException {
